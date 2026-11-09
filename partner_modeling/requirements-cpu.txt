@@ -1,0 +1,18 @@
+# CPU environment for partner_modeling (macOS arm64, Python 3.12). Same JAX/Flax/NumPy pins as the
+# original study, so episodes reproduce bit for bit.
+#   python3.12 -m venv .venv
+#   .venv/bin/pip install -r partner_modeling/requirements-cpu.txt
+#   .venv/bin/pip install -e . --no-deps
+chex==0.1.88
+flax==0.10.2
+gymnax==0.0.9
+jax==0.5.3
+jaxlib==0.5.3
+jaxtyping==0.3.11
+matplotlib==3.11.2
+ml-dtypes==0.4.0
+numpy==1.26.4
+pillow==13.0.0
+pytest==9.2.0
+safetensors==0.8.0
+scipy==1.12.0

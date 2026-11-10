@@ -190,3 +190,65 @@ def randomized_pit(pi_true: np.ndarray, actions: np.ndarray, rng: np.random.Gene
     lo = np.where(a > 0, cdf[np.arange(len(a)), np.maximum(a - 1, 0)], 0.0)
     p = pi_true[np.arange(len(a)), a]
     return lo + rng.random(len(a)) * p
+
+
+# ---------------------------------------------------------------------------
+# Observer over the recipe (multi-recipe layouts)
+# ---------------------------------------------------------------------------
+
+def recipe_filter(model: TypedIntentModel, theta, views: Sequence[PartnerView], actions: Sequence[int],
+                  rewards: Sequence[float], recipes: Sequence[Sequence[int]]):
+    """Exact posterior over the current recipe from the partner's actions, its type ``theta`` known.
+
+    ``recipes``: the layout's possible recipes (lists of ingredient indices).  The recipe is
+    uniform over them at the start and is redrawn uniformly after every correct delivery
+    (``rewards[t] > 0``); a wrong delivery (``rewards[t] < 0``) rules out the delivered soup's
+    composition.  The partner's features, and so its memory, depend on the recipe, so one memory
+    track is replayed per hypothesis.
+
+    Returns ``(prior_pred, post, true_idx)``: the belief before and after step t, each (T, n),
+    and the index (T,) of the recipe in force at step t.
+    """
+    import dataclasses
+    from partner_modeling.env_compat import DynamicObject
+
+    def ingredients(v):
+        out, v, idx = [], int(v) >> 2, 0
+        while v > 0:
+            out += [idx] * (v & 3)
+            v >>= 2
+            idx += 1
+        return out
+
+    recipes = [sorted(int(i) for i in r) for r in recipes]
+    enc = [sum(int(DynamicObject.BASE_INGREDIENT) << (2 * i) for i in r) for r in recipes]
+    T, n = len(actions), len(recipes)
+    prior_pred, post = np.zeros((T, n)), np.zeros((T, n))
+    true_idx = np.array([enc.index(int(v.recipe)) for v in views[:T]])
+    b, mem = np.full(n, 1.0 / n), [-1] * n
+    for t in range(T):
+        prior_pred[t] = b
+        a, like = int(actions[t]), np.zeros(n)
+        for j in range(n):
+            v = dataclasses.replace(views[t], recipe=enc[j])
+            like[j] = model.dist(theta, v, mem[j])[0][a]
+            mem[j] = model.update_memory(v, mem[j], a)
+        b = b * like
+        b = b / b.sum()
+        if rewards[t] != 0 and t + 1 < len(views):
+            for ag in range(views[t].inv.shape[0]):
+                inv = int(views[t].inv[ag])
+                if inv & DynamicObject.PLATE and inv & DynamicObject.COOKED and int(views[t + 1].inv[ag]) == 0:
+                    c = sorted(ingredients(inv))
+                    if c not in recipes:
+                        continue
+                    if rewards[t] > 0:      # the delivered soup was the recipe: its memory track is the true one
+                        mem = [mem[recipes.index(c)]] * n
+                    else:
+                        b[recipes.index(c)] = 0.0
+        if rewards[t] > 0:
+            b = np.full(n, 1.0 / n)
+        elif rewards[t] < 0:
+            b = b / b.sum() if b.sum() > 0 else np.full(n, 1.0 / n)
+        post[t] = b
+    return prior_pred, post, true_idx

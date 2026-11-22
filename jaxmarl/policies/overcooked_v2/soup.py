@@ -3,18 +3,23 @@
 What a player does depends on what it holds:
 
 * a dish:        take it to the goal;
-* a plate:       take the soup out of a pot that is cooking or cooked, else keep clear;
+* a plate:       take the soup out of a pot that is cooking or cooked, else put it down
+                 if the pot still needs ingredients, else keep clear;
 * an ingredient: put it in a pot that has room, else keep clear;
 * nothing:       choose between fetching an ingredient, fetching a plate, and keeping clear.
 
-Only the last choice depends on the type.  It is a softmax over the options that are
-currently useful, scored by a type weight minus a penalty on path length:
+The type sets this choice and how often the player idles.  The choice is a softmax over the
+options that are currently useful, scored by a type weight minus a penalty on path length:
 
     p(option) is proportional to exp(weight[option] - distance_weight * distance[option])
 
-A *runner* weights ingredients, a *plater* weights plates, a *flex* player takes whichever is
-nearer.  Once a move shows which of the two it went for, the player keeps to it until its
-hands are full or the errand stops being useful; this is its only memory.
+A *runner* only fetches ingredients, a *plater* only fetches plates, a *flex* player takes
+whichever is nearer, and a *lazy* player is a flex player who mostly stands still.  Once a move
+shows which of the two errands it went for, the player keeps to it until its hands are full or
+the errand stops being useful; this is its only memory.
+
+A plate fetched before the soup is cooking is put down on a counter while the pot still needs
+ingredients that nobody is bringing, and fetched from there once there is soup.
 
 On top of that, every type stands still with probability ``rho`` and moves uniformly at random
 with probability ``eps``.
@@ -96,16 +101,26 @@ class SoupPolicy(Policy):
         to_ingredient, d_ingredient, can_ingredient = go_interact(
             v, v.ingredient_pile.any(-1)
         )
-        to_plate, d_plate, can_plate = go_interact(v, v.plate_pile)
+        # a plate put down on a counter is fetched like one from the pile
+        plate_on_counter = (
+            v.wall
+            & (v.items[..., 0] > 0)
+            & (v.items[..., 1] == 0)
+            & (v.items[..., 2:].sum(-1) == 0)
+        )
+        to_plate, d_plate, can_plate = go_interact(v, v.plate_pile | plate_on_counter)
         aside = step_aside(v)
 
-        # which errands are useful for a player with free hands
+        # which errands are useful for a player with free hands.  A plate is fetched early,
+        # while the pot fills, only if none is already waiting on a counter.
         on_its_way = holds_ingredient(v.other_held).astype(count.dtype)
         want_ingredient = (
             jnp.any(has_room & (count + on_its_way < POT_SIZE)) & can_ingredient
         )
         want_plate = (
-            jnp.any(v.pot & (count > 0)) & ~holds_plate(v.other_held) & can_plate
+            (has_soup.any() | (jnp.any(v.pot & (count > 0)) & ~plate_on_counter.any()))
+            & ~holds_plate(v.other_held)
+            & can_plate
         )
         useful = jnp.stack([want_ingredient, want_plate, jnp.array(True)])
 
@@ -138,13 +153,26 @@ class SoupPolicy(Policy):
         free_moves = jnp.stack([to_ingredient, to_plate, aside])
         free_probs = (choice[:, None] * jax.nn.one_hot(free_moves, NUM_ACTIONS)).sum(0)
 
-        # the move when hands are full
+        # the move when hands are full.  A plate with no soup to wait for is put down on an
+        # empty counter while the pot needs ingredients that the other player is not bringing;
+        # otherwise a player who fetched a plate early would hold it forever.
+        empty_counter = v.wall & (v.items.sum(-1) == 0)
+        to_counter, _, can_counter = go_interact(v, empty_counter)
+        plate_blocks = (
+            ~has_soup.any()
+            & jnp.any(has_room & (count + on_its_way < POT_SIZE))
+            & can_counter
+        )
         full_move = jnp.where(
             holds_dish(v.held),
             to_goal,
             jnp.where(
                 holds_plate(v.held),
-                jnp.where(has_soup.any(), to_soup, aside),
+                jnp.where(
+                    has_soup.any(),
+                    to_soup,
+                    jnp.where(plate_blocks, to_counter, aside),
+                ),
                 jnp.where(holds_ingredient(v.held) & has_room.any(), to_pot, aside),
             ),
         )
@@ -167,24 +195,30 @@ class SoupPolicy(Policy):
 
 
 SOUP_TYPES = {
-    #          w_ingredient, w_plate
-    "runner": (4.0, 1.0),
-    "plater": (1.0, 4.0),
-    "flex": (2.5, 2.5),
+    #          w_ingredient, w_plate, rho
+    "runner": (8.0, -8.0, 0.05),  # only fetches ingredients
+    "plater": (-8.0, 8.0, 0.05),  # only fetches plates
+    "flex": (2.5, 2.5, 0.05),  # whichever is nearer
+    "lazy": (2.5, 2.5, 0.7),  # flex, but stands still most of the time
 }
 
 
-def make_population(env, rho: float = 0.05, eps: float = 0.03) -> Population:
-    """The three soup types with a uniform prior."""
+def make_population(env, eps: float = 0.03) -> Population:
+    """The soup types with a uniform prior.
+
+    The types are chosen so that the partner's type changes what the other seat should do:
+    two runners or two platers deliver nothing, while a runner and a plater work well
+    together, and a lazy partner leaves most of the work to you.
+    """
     names = tuple(SOUP_TYPES)
-    weights = jnp.array([SOUP_TYPES[name] for name in names])
+    table = jnp.array([SOUP_TYPES[name] for name in names])
     k = len(names)
     return Population(
         policy=SoupPolicy(env),
         params=SoupParams(
-            w_ingredient=weights[:, 0],
-            w_plate=weights[:, 1],
-            rho=jnp.full((k,), rho),
+            w_ingredient=table[:, 0],
+            w_plate=table[:, 1],
+            rho=table[:, 2],
             eps=jnp.full((k,), eps),
         ),
         probs=jnp.full((k,), 1.0 / k),

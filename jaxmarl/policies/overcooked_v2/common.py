@@ -157,14 +157,17 @@ def next_to(mask):
 
 def distance_to(walkable, goals):
     """Shortest number of moves from every walkable cell to a cell in ``goals``."""
-    height, width = walkable.shape
-    dist = jnp.where(goals & walkable, 0, FAR)
 
-    def relax(_, dist):
+    def relax(carry):
+        dist, _ = carry
         around = jnp.stack([_neighbour(dist, a, FAR) for a in range(4)]).min(0)
-        return jnp.where(walkable, jnp.minimum(dist, around + 1), FAR)
+        new = jnp.where(walkable, jnp.minimum(dist, around + 1), FAR)
+        return new, jnp.any(new != dist)
 
-    return jax.lax.fori_loop(0, height * width, relax, dist)
+    # relax until nothing changes: as many rounds as the longest path, not one per cell
+    dist = jnp.where(goals & walkable, 0, FAR)
+    dist, _ = jax.lax.while_loop(lambda c: c[1], relax, (dist, jnp.array(True)))
+    return dist
 
 
 def _free_floor(view: View):

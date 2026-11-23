@@ -1,6 +1,6 @@
 site_name: JaxMARL Documentation
-site_url: https://jaxmarl.foersterlab.com
-repo_url: https://github.com/flairox/jaxmarl
+site_url: https://sunxd3.github.io/JaxMARL/
+repo_url: https://github.com/sunxd3/JaxMARL
 theme:
   name: material
   features:

@@ -8,6 +8,7 @@ import pytest
 
 from jaxmarl import make
 from jaxmarl.policies import uniform_population
+from jaxmarl.policies.coin_game import reciprocity
 from jaxmarl.policies.overcooked_v2 import soup
 
 
@@ -28,9 +29,15 @@ def _soup(env):
     return {seat: population for seat in env.agents}
 
 
+def _reciprocity(env):
+    population = reciprocity.make_population(env)
+    return {seat: population for seat in env.agents}
+
+
 CASES = [
     ("overcooked_v2/soup", _overcooked, _soup),
     ("overcooked_v2/uniform", _overcooked, _uniform),
+    ("coin_game/reciprocity", _coin_game, _reciprocity),
     ("coin_game/uniform", _coin_game, _uniform),
 ]
 

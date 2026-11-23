@@ -558,11 +558,9 @@ class CoinGame(MultiAgentEnv):
         )
         ax2.axis("off")
         canvas.draw()
-        image = Image.frombytes(
-            "RGB",
-            fig.canvas.get_width_height(),
-            fig.canvas.tostring_rgb(),
-        )
+        image = Image.frombuffer(
+            "RGBA", fig.canvas.get_width_height(), canvas.buffer_rgba()
+        ).convert("RGB")
         return image
 
 
